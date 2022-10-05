@@ -9,6 +9,8 @@ static TaskHandle_t heaterTaskHandle = NULL;
 
 static int targetHeartbeat = 80;
 static double targetTemperature = 35;
+static bool heatingEnabled = false;
+static bool vibrationEnabled = false;
 
 class ServerCallbacks: public NimBLEServerCallbacks {
     void onConnect(NimBLEServer* pServer) {
@@ -36,6 +38,15 @@ class HeartbeatCallbacks: public NimBLECharacteristicCallbacks {
     }
 };
 
+class EnableCallbacks: public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* pCharacteristic) {
+        uint8_t value = pCharacteristic->getValue<uint8_t>();
+        vibrationEnabled = value & 1;
+        heatingEnabled = value & 2;
+        Serial.println(value);
+    }
+};
+
 void motorTask(void *parameters) {
     // Initialize pins
     ledcSetup(0, 5000, 8);
@@ -43,10 +54,10 @@ void motorTask(void *parameters) {
     ledcSetup(2, 50000, 8);
     ledcSetup(3, 50000, 8);
 
-    ledcAttachPin(26, 0); // IN1 M1+
-    ledcAttachPin(18, 1); // IN2 M1-
-    ledcAttachPin(19, 2); // IN3 M2+
-    ledcAttachPin(23, 3); // IN4 M2-
+    ledcAttachPin(12, 0); // IN1 M1+
+    ledcAttachPin(32, 1); // IN2 M1-
+    ledcAttachPin(25, 2); // IN3 M2+
+    ledcAttachPin(27, 3); // IN4 M2-
 
     ledcWrite(1, 0);
     ledcWrite(3, 0);
@@ -54,14 +65,16 @@ void motorTask(void *parameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
     while (true) {
         vTaskDelayUntil(&xLastWakeTime, 60000 / targetHeartbeat);
+        if (!vibrationEnabled)
+            continue;
         for (int i = 0; i <= 25; i++) {
-            ledcWrite(0, i * 8);
-            ledcWrite(2, i * 8);
+            ledcWrite(0, i * 4);
+            ledcWrite(2, i * 4);
             vTaskDelay(2);
         }
         for (int i = 25; i >= 0; i--) {
-            ledcWrite(0, i * 8);
-            ledcWrite(2, i * 8);
+            ledcWrite(0, i * 4);
+            ledcWrite(2, i * 4);
             vTaskDelay(2);
         }
         Serial.println(xTaskGetTickCount() - xLastWakeTime);
@@ -69,8 +82,8 @@ void motorTask(void *parameters) {
 }
 
 void heaterTask(void *parameters) {
-    analogReadResolution(12);
     pinMode(35, INPUT);
+    analogReadResolution(12);
 
     ledcSetup(4, 5000, 8);
     ledcAttachPin(33, 4);
@@ -79,16 +92,20 @@ void heaterTask(void *parameters) {
 
     while (true) {
         vTaskDelayUntil(&xLastWakeTime, 500);
-        double temperature = 1. * analogRead(35) * 330 / 4096;
+        if(!heatingEnabled)
+            continue;
+        uint16_t sensor = analogRead(35);
+        double temperature = 1. * sensor * 330 / 4096 + 10;
+        Serial.println(temperature);
         //double temperature = 0;
         if (targetTemperature - temperature < 1)
             ledcWrite(4, 0);
         else if (targetTemperature - temperature < 3)
-            ledcWrite(4, 64);
+            ledcWrite(4, 20);
         else if (targetTemperature - temperature < 5)
-            ledcWrite(4, 128);
+            ledcWrite(4, 40);
         else
-            ledcWrite(4, 256);
+            ledcWrite(4, 80);
     }
 }
 
@@ -105,9 +122,13 @@ void setup() {
 
     NimBLEService* pService = pServer->createService("61535c46-202a-4859-a213-520ef987c606");
     NimBLECharacteristic* pBeatCharacteristic = pService->createCharacteristic("69e01dc5-b098-417a-9e2e-be69bc86c2ae", NIMBLE_PROPERTY::WRITE);
+    NimBLECharacteristic* pEnableCharacteristic = pService->createCharacteristic("c2abad98-a402-42a8-8981-edf54dd7d6ef", NIMBLE_PROPERTY::WRITE);
 
     pBeatCharacteristic->setValue(80);
     pBeatCharacteristic->setCallbacks(new HeartbeatCallbacks());
+
+    pEnableCharacteristic->setValue(0);
+    pEnableCharacteristic->setCallbacks(new EnableCallbacks());
 
     pService->start();
 
